@@ -19,6 +19,8 @@ let currentSessionData = []; // Data used for the current session (subset for re
 let isRelearnMode = false;   // Flag to indicate if we are in relearn mode
 let lastSessionConfig = { mode: null, dataset: 'full' }; // Track last finished session
 
+const SESSION_STATE_KEY = 'vocab_session_state_v2';
+
 // Game States
 let fcIndex = 0;
 let fcIsFlipped = false;
@@ -66,6 +68,74 @@ function toggleTheme() {
 }
 
 function saveStats() { localStorage.setItem('study_stats', JSON.stringify(userStats)); }
+
+function deepClone(obj) {
+    return JSON.parse(JSON.stringify(obj));
+}
+
+function saveSessionState(state) {
+    if (!state || !state.setId) return;
+    try {
+        localStorage.setItem(SESSION_STATE_KEY, JSON.stringify(state));
+    } catch (error) {
+        console.warn('Không thể lưu trạng thái phiên học:', error);
+    }
+}
+
+function loadSessionStateFromStorage() {
+    try {
+        const raw = localStorage.getItem(SESSION_STATE_KEY);
+        return raw ? JSON.parse(raw) : null;
+    } catch (error) {
+        console.warn('Không thể đọc trạng thái phiên học:', error);
+        return null;
+    }
+}
+
+function clearSessionState() {
+    localStorage.removeItem(SESSION_STATE_KEY);
+}
+
+function persistFlashcardState() {
+    if (!currentSet || !currentSet.id || !currentSessionData.length) return;
+    saveSessionState({
+        mode: 'flashcard',
+        setId: currentSet.id,
+        dataset: lastSessionConfig?.dataset || (isRelearnMode ? 'weak' : 'full'),
+        isRelearnMode,
+        fcIndex,
+        fcStats,
+        currentSessionData: deepClone(currentSessionData)
+    });
+}
+
+function persistLearnState() {
+    if (!currentSet || !currentSet.id || !learnQuestions.length) return;
+    saveSessionState({
+        mode: 'learn',
+        setId: currentSet.id,
+        dataset: lastSessionConfig?.dataset || (isRelearnMode ? 'weak' : 'full'),
+        isRelearnMode,
+        learnIndex,
+        learnStats,
+        learnQuestions: deepClone(learnQuestions),
+        currentSessionData: deepClone(currentSessionData)
+    });
+}
+
+function persistMatchingState() {
+    if (!currentSet || !currentSet.id || !matchCards.length) return;
+    saveSessionState({
+        mode: 'matching',
+        setId: currentSet.id,
+        dataset: 'full',
+        isRelearnMode: false,
+        matchCards: deepClone(matchCards),
+        matchMatched: deepClone(matchMatched),
+        matchTime,
+        currentSessionData: deepClone(currentSessionData)
+    });
+}
 
 async function loadVocabSets() {
     if (vocabLoaded) return;
@@ -217,7 +287,6 @@ function showView(viewName) {
     if (viewName === 'home') {
         renderLibrary();
         document.getElementById('search-input').value = searchTerm;
-        document.getElementById('search-input').focus();
     } else if (viewName === 'set-detail') {
         renderSetDetail();
     } else if (viewName === 'settings') {
@@ -404,6 +473,109 @@ function handleSearch(val) {
     renderLibrary();
 }
 
+function resumeSessionIfAvailable() {
+    const savedState = loadSessionStateFromStorage();
+    if (!savedState) {
+        showView('home');
+        return;
+    }
+
+    let resumed = false;
+    switch (savedState.mode) {
+        case 'flashcard':
+            resumed = resumeFlashcardSession(savedState);
+            break;
+        case 'learn':
+            resumed = resumeLearnSession(savedState);
+            break;
+        case 'matching':
+            resumed = resumeMatchingSession(savedState);
+            break;
+        default:
+            resumed = false;
+    }
+
+    if (!resumed) {
+        clearSessionState();
+        showView('home');
+    }
+}
+
+function resumeFlashcardSession(state) {
+    const set = resolveSet(state.setId);
+    if (!set) return false;
+    currentSet = { ...set, data: cloneSessionDataFromSet(set) };
+    currentSessionData = state.currentSessionData ? deepClone(state.currentSessionData) : cloneSessionDataFromSet(currentSet);
+    if (!currentSessionData.length) return false;
+    isRelearnMode = !!state.isRelearnMode;
+    lastSessionConfig = { mode: 'flashcard', dataset: state.dataset || (isRelearnMode ? 'weak' : 'full') };
+    fcIndex = Math.min(state.fcIndex || 0, currentSessionData.length - 1);
+    fcStats = state.fcStats || { known: 0, learning: 0 };
+    fcIsFlipped = false;
+    sessionStartTime = Date.now();
+    showView('flashcard');
+    updateFlashcardUI();
+    return true;
+}
+
+function resumeLearnSession(state) {
+    const set = resolveSet(state.setId);
+    if (!set) return false;
+    currentSet = { ...set, data: cloneSessionDataFromSet(set) };
+    currentSessionData = state.currentSessionData ? deepClone(state.currentSessionData) : cloneSessionDataFromSet(currentSet);
+    learnQuestions = state.learnQuestions ? deepClone(state.learnQuestions) : [];
+    if (!learnQuestions.length || !currentSessionData.length) return false;
+    isRelearnMode = !!state.isRelearnMode;
+    lastSessionConfig = { mode: 'learn', dataset: state.dataset || (isRelearnMode ? 'weak' : 'full') };
+    learnIndex = Math.min(state.learnIndex || 0, learnQuestions.length - 1);
+    learnStats = state.learnStats || { correct: 0, wrong: 0 };
+    isLearnAnswerLocked = false;
+    sessionStartTime = Date.now();
+    showView('learn');
+    renderLearnQuestion();
+    return true;
+}
+
+function resumeMatchingSession(state) {
+    const set = resolveSet(state.setId);
+    if (!set) return false;
+    currentSet = { ...set, data: cloneSessionDataFromSet(set) };
+    currentSessionData = state.currentSessionData ? deepClone(state.currentSessionData) : cloneSessionDataFromSet(currentSet);
+    matchCards = state.matchCards ? deepClone(state.matchCards) : [];
+    matchMatched = state.matchMatched ? deepClone(state.matchMatched) : [];
+    if (!matchCards.length) return false;
+    matchSelected = [];
+    matchTime = state.matchTime || 0;
+    isRelearnMode = false;
+    lastSessionConfig = { mode: 'matching', dataset: 'full' };
+    showView('matching');
+    renderMatchingGridFromCards();
+    startMatchTimer();
+    return true;
+}
+
+function renderMatchingGridFromCards() {
+    const grid = document.getElementById('matching-grid');
+    if (!grid) return;
+    grid.innerHTML = '';
+    matchCards.forEach(card => {
+        const el = document.createElement('div');
+        const isMatched = matchMatched.includes(card.id);
+        if (isMatched) {
+            el.className = 'bg-green-100 dark:bg-green-900/30 border-2 border-green-500 dark:border-green-600 text-green-700 dark:text-green-300 rounded-2xl p-2 md:p-3 flex items-center justify-center text-center h-full font-bold anim-correct text-xs md:text-sm shadow-inner';
+        } else {
+            el.className = 'bg-white dark:bg-dark-card border-2 border-slate-200 dark:border-slate-700 rounded-2xl p-2 md:p-3 flex items-center justify-center text-center cursor-pointer hover:border-indigo-300 dark:hover:border-indigo-600 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all select-none h-full font-medium text-slate-700 dark:text-slate-200 active:scale-95 text-xs md:text-sm btn-press shadow-sm break-words';
+            el.onclick = () => handleMatchClick(card.id, card.refId, el);
+        }
+        el.textContent = card.content;
+        grid.appendChild(el);
+    });
+    const timerEl = document.getElementById('match-timer');
+    if (timerEl) {
+        timerEl.textContent = formatTime(matchTime);
+    }
+}
+
 function renderLibrary() {
     const container = document.getElementById('library-container');
     const emptyState = document.getElementById('search-empty');
@@ -476,7 +648,6 @@ function renderLibrary() {
         );
         
         if (sets.length > 0) {
-            hasResults = true;
             const section = document.createElement('div');
             section.className = 'w-full';
             
@@ -487,11 +658,13 @@ function renderLibrary() {
 
             const grid = document.createElement('div');
             grid.className = 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 md:gap-4';
+            let categoryHasResults = false;
 
             sets.forEach(set => {
                 const card = document.createElement('div');
                 const progress = getSetProgress(set);
                 if (!matchesProgressFilter(progress.percent)) return;
+                categoryHasResults = true;
                 const isComplete = progress.percent === 100;
                 const showProgress = progress.percent > 0 && progress.percent < 100;
 
@@ -529,8 +702,12 @@ function renderLibrary() {
                 `;
                 grid.appendChild(card);
             });
-            section.appendChild(grid);
-            container.appendChild(section);
+
+            if (categoryHasResults) {
+                hasResults = true;
+                section.appendChild(grid);
+                container.appendChild(section);
+            }
         }
     });
 
@@ -826,12 +1003,60 @@ function updateFlashcardUI() {
 
 function initDragEvents() {
     const card = document.getElementById('flashcard'); if (!card) return;
-    let startX = 0, currentX = 0, isDragging = false;
-    const startDrag = (e) => { if (e.target.closest('button')) return; isDragging = true; startX = e.type.includes('mouse') ? e.clientX : e.touches[0].clientX; card.classList.remove('card-transition'); card.classList.add('no-transition'); };
-    const moveDrag = (e) => { if (!isDragging) return; currentX = (e.type.includes('mouse') ? e.clientX : e.touches[0].clientX) - startX; const rotate = currentX * 0.05; card.style.transform = `translateX(${currentX}px) rotate(${rotate}deg) ${fcIsFlipped ? 'rotateY(180deg)' : ''}`; const opacity = Math.min(Math.abs(currentX) / 100, 1); if (currentX > 0) { document.getElementById('label-right').style.opacity = opacity; document.getElementById('label-left').style.opacity = 0; card.style.borderColor = `rgba(34, 197, 94, ${opacity})`; } else { document.getElementById('label-left').style.opacity = opacity; document.getElementById('label-right').style.opacity = 0; card.style.borderColor = `rgba(239, 68, 68, ${opacity})`; } };
-    const endDrag = () => { if (!isDragging) return; isDragging = false; card.classList.remove('no-transition'); card.classList.add('card-transition'); card.style.borderColor = ''; if (currentX > 80) processSwipe('right'); else if (currentX < -80) processSwipe('left'); else { card.style.transform = fcIsFlipped ? 'rotateY(180deg)' : ''; document.getElementById('label-left').style.opacity = 0; document.getElementById('label-right').style.opacity = 0; } if (Math.abs(currentX) < 5) toggleFlip(); currentX = 0; };
+    let startX = 0, currentX = 0, isDragging = false, pendingTap = false;
+    const startDrag = (e) => {
+        if (e.target.closest('button')) return;
+        isDragging = true;
+        pendingTap = false;
+        startX = e.type.includes('mouse') ? e.clientX : e.touches[0].clientX;
+        card.classList.remove('card-transition');
+        card.classList.add('no-transition');
+    };
+    const moveDrag = (e) => {
+        if (!isDragging) return;
+        currentX = (e.type.includes('mouse') ? e.clientX : e.touches[0].clientX) - startX;
+        const rotate = currentX * 0.05;
+        card.style.transform = `translateX(${currentX}px) rotate(${rotate}deg) ${fcIsFlipped ? 'rotateY(180deg)' : ''}`;
+        const opacity = Math.min(Math.abs(currentX) / 100, 1);
+        if (currentX > 0) {
+            document.getElementById('label-right').style.opacity = opacity;
+            document.getElementById('label-left').style.opacity = 0;
+            card.style.borderColor = `rgba(34, 197, 94, ${opacity})`;
+        } else {
+            document.getElementById('label-left').style.opacity = opacity;
+            document.getElementById('label-right').style.opacity = 0;
+            card.style.borderColor = `rgba(239, 68, 68, ${opacity})`;
+        }
+    };
+    const endDrag = () => {
+        if (!isDragging) return;
+        isDragging = false;
+        card.classList.remove('no-transition');
+        card.classList.add('card-transition');
+        card.style.borderColor = '';
+        if (currentX > 80) {
+            pendingTap = false;
+            processSwipe('right');
+        } else if (currentX < -80) {
+            pendingTap = false;
+            processSwipe('left');
+        } else {
+            pendingTap = Math.abs(currentX) < 5;
+            card.style.transform = fcIsFlipped ? 'rotateY(180deg)' : '';
+            document.getElementById('label-left').style.opacity = 0;
+            document.getElementById('label-right').style.opacity = 0;
+        }
+        currentX = 0;
+    };
     card.addEventListener('mousedown', startDrag); window.addEventListener('mousemove', moveDrag); window.addEventListener('mouseup', endDrag);
     card.addEventListener('touchstart', startDrag, { passive: true }); card.addEventListener('touchmove', moveDrag, { passive: true }); card.addEventListener('touchend', endDrag);
+    card.addEventListener('click', (e) => {
+        if (pendingTap) {
+            e.preventDefault();
+            pendingTap = false;
+            toggleFlip();
+        }
+    });
 }
 
 function toggleFlip() { const card = document.getElementById('flashcard'); card.style.transform = `translateX(0) rotate(0deg) ${fcIsFlipped ? '' : 'rotateY(180deg)'}`; fcIsFlipped = !fcIsFlipped; }
