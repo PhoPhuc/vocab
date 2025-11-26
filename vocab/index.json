@@ -1,0 +1,75 @@
+{
+  "sets": [
+    {
+      "id": "gdpt-10",
+      "categoryId": "gdpt",
+      "title": "Tiếng Anh 10 - Unit 1",
+      "description": "Family Life (Global Success)",
+      "color": "blue",
+      "topics": [
+        {
+          "id": "family-life",
+          "title": "Family Life",
+          "file": "gdpt-10/family-life.json"
+        }
+      ]
+    },
+    {
+      "id": "gdpt-12",
+      "categoryId": "gdpt",
+      "title": "Tiếng Anh 12 - Unit 1",
+      "description": "LIFE STORIES THAT WE ADMIRE",
+      "color": "indigo",
+      "topics": [
+        {
+          "id": "life-story",
+          "title": "LIFE STORIES THAT WE ADMIRE",
+          "file": "gdpt-12/life-story.json"
+        }
+      ]
+    },
+    {
+      "id": "adv-ielts",
+      "categoryId": "advanced_gdpt",
+      "title": "Advanced English C1/C2",
+      "description": "Từ vựng nâng cao cho IELTS & HSG",
+      "color": "purple",
+      "topics": [
+        {
+          "id": "core",
+          "title": "Core Academic Vocabulary",
+          "file": "adv-ielts/core.json"
+        }
+      ]
+    },
+    {
+      "id": "topic-tech",
+      "categoryId": "topic",
+      "title": "Công Nghệ & AI",
+      "description": "Thuật ngữ IT và trí tuệ nhân tạo",
+      "color": "cyan",
+      "topics": [
+        {
+          "id": "technology",
+          "title": "Công nghệ",
+          "file": "topic-tech/technology.json"
+        }
+      ]
+    },
+    {
+      "id": "topic-biz",
+      "categoryId": "topic",
+      "title": "Business English",
+      "description": "Giao tiếp văn phòng và thương mại",
+      "color": "emerald",
+      "topics": [
+        {
+          "id": "business",
+          "title": "Kinh doanh",
+          "file": "topic-biz/business.json"
+        }
+      ]
+    }
+  ]
+}
+
