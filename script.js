@@ -32,6 +32,10 @@ let matchSelected = [];
 let matchMatched = [];
 let matchTimerInterval;
 let matchTime = 0;
+let matchCurrentBatch = 0; // Batch hiện tại (mỗi batch 10 cặp)
+let matchTotalPairs = 0; // Tổng số cặp
+let matchCorrectPairs = 0; // Số cặp đúng
+let matchWrongAttempts = 0; // Số lần chọn sai
 
 let learnIndex = 0;
 let learnStats = { correct: 0, wrong: 0 };
@@ -44,8 +48,15 @@ let userStats = JSON.parse(localStorage.getItem('study_stats')) || {
     totalMinutes: 0,
     sessions: 0,
     learnedIds: [], // Track unique learned word IDs
-    weakWords: {}   // { setId: [id1, id2, ...] }
+    weakWords: {},   // { setId: [id1, id2, ...] }
+    randomHistory: {}, // { setId: [lastRandomWordIds] } - Lưu lịch sử random để tránh trùng lặp
+    matchingStats: { total: 0, correct: 0 }, // Thống kê Matching
+    learnStats: { total: 0, correct: 0 }    // Thống kê Learn
 };
+
+// Word selection state
+let selectedWordCount = null; // null = all, number = specific count
+let wordSelectionMode = 'random'; // 'random', 'first', 'next', 'unlearned', 'custom'
 
 // --- THEME & DATA ---
 function initTheme() {
@@ -139,41 +150,64 @@ function persistMatchingState() {
 
 async function loadVocabSets() {
     if (vocabLoaded) return;
+    
+    // Show loading
+    showLoading(true);
+    
     try {
+        // Load category configuration
         const response = await fetch(VOCAB_INDEX_URL);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const indexData = await response.json();
-        const sets = indexData.sets || [];
+        const categories = indexData.categories || [];
         const loadedSets = [];
 
-        for (const setMeta of sets) {
-            const topicsMeta = setMeta.topics || [];
-            const topicData = [];
+        // Auto-scan: Try to fetch all possible JSON files in each folder
+        for (const category of categories) {
+            try {
+                // Get list of files to try from a comprehensive list
+                const filesToTry = await getFilesToScan(category.folder);
+                
+                // Try to load each file
+                const loadPromises = filesToTry.map(async (filename) => {
+                    try {
+                        const vocabResponse = await fetch(`./vocab/${category.folder}/${filename}`);
+                        if (!vocabResponse.ok) return null;
+                        
+                        const vocabJson = await vocabResponse.json();
+                        
+                        // Skip if it's not a vocab file (no words array) or is a config file
+                        if (!vocabJson.words || !Array.isArray(vocabJson.words)) return null;
+                        if (filename.includes('vocab-list') || filename.includes('index')) return null;
+                        
+                        const words = vocabJson.words;
+                        if (words.length === 0) return null;
 
-            for (const topic of topicsMeta) {
-                try {
-                    const topicResponse = await fetch(`./vocab/${topic.file}`);
-                    if (!topicResponse.ok) throw new Error(`HTTP ${topicResponse.status}`);
-                    const topicJson = await topicResponse.json();
-                    const words = (topicJson.words || []).map(word => ({
-                        ...word,
-                        topicId: topic.id,
-                        topicTitle: topic.title
-                    }));
-                    topicData.push({
-                        ...topic,
-                        words
-                    });
-                } catch (topicError) {
-                    console.error(`Không thể tải chủ đề ${topic.id}:`, topicError);
-                }
+                        // Generate unique ID from folder and filename
+                        const setId = `${category.folder}-${filename.replace(/\.json$/, '')}`.toLowerCase();
+
+                        return {
+                            id: setId,
+                            categoryId: category.type, // Auto-determined from folder
+                            title: vocabJson.name || vocabJson.title || filename.replace(/\.json$/, ''),
+                            description: vocabJson.title || vocabJson.name || '',
+                            color: vocabJson.color || 'indigo',
+                            data: words.map(word => ({
+                                ...word,
+                                topicId: vocabJson.topicId || setId,
+                                topicTitle: vocabJson.title || vocabJson.name
+                            }))
+                        };
+                    } catch (fileError) {
+                        return null;
+                    }
+                });
+                
+                const results = await Promise.all(loadPromises);
+                loadedSets.push(...results.filter(r => r !== null));
+            } catch (categoryError) {
+                console.error(`Không thể tải thư mục ${category.folder}:`, categoryError);
             }
-
-            loadedSets.push({
-                ...setMeta,
-                topics: topicData.map(({ words, ...rest }) => rest),
-                data: topicData.flatMap(t => t.words)
-            });
         }
 
         VOCAB_SETS = loadedSets;
@@ -182,6 +216,76 @@ async function loadVocabSets() {
         VOCAB_SETS = [];
     } finally {
         vocabLoaded = true;
+        showLoading(false);
+    }
+}
+
+// Get list of files to scan - automatically tries to detect JSON files
+async function getFilesToScan(folder) {
+    const detectedFiles = [];
+    
+    // Comprehensive list of possible vocab file names to try
+    // This covers common patterns and can be extended
+    const possibleFiles = [
+        // GDPT Program files
+        'family-life.json', 'life-story.json', 'school-life.json', 'friendship.json',
+        'environment.json', 'global-warming.json', 'cultural-diversity.json',
+        'future-jobs.json', 'cities.json', 'ecotourism.json',
+        
+        // Advanced GDPT files
+        'core.json', 'academic.json', 'ielts.json', 'advanced.json',
+        'essay.json', 'presentation.json', 'debate.json',
+        
+        // Topic vocab files
+        'technology.json', 'business.json', 'travel.json', 'food.json',
+        'health.json', 'sports.json', 'music.json', 'art.json',
+        'science.json', 'education.json', 'culture.json', 'history.json',
+        'politics.json', 'economy.json', 'medicine.json', 'law.json',
+        'engineering.json', 'psychology.json', 'philosophy.json'
+    ];
+    
+    // Try to detect files by attempting to fetch them
+    // Use Promise.all for parallel checking
+    const checkPromises = possibleFiles.map(async (filename) => {
+        try {
+            // Try HEAD request first (faster)
+            const headResponse = await fetch(`./vocab/${folder}/${filename}`, { 
+                method: 'HEAD',
+                cache: 'no-cache'
+            });
+            if (headResponse.ok) {
+                return filename;
+            }
+        } catch (e) {
+            // File doesn't exist or error, try GET as fallback
+            try {
+                const getResponse = await fetch(`./vocab/${folder}/${filename}`, {
+                    method: 'GET',
+                    cache: 'no-cache'
+                });
+                if (getResponse.ok) {
+                    const data = await getResponse.json();
+                    // Only include if it's a vocab file (has words array)
+                    if (data.words && Array.isArray(data.words)) {
+                        return filename;
+                    }
+                }
+            } catch (e2) {
+                // File doesn't exist
+            }
+        }
+        return null;
+    });
+    
+    const results = await Promise.all(checkPromises);
+    return results.filter(f => f !== null);
+}
+
+// Loading UI functions
+function showLoading(show) {
+    const loadingEl = document.getElementById('loading-overlay');
+    if (loadingEl) {
+        loadingEl.style.display = show ? 'flex' : 'none';
     }
 }
 
@@ -306,6 +410,19 @@ function renderStatsView() {
     document.getElementById('stats-words').textContent = userStats.totalWords;
     document.getElementById('stats-time').textContent = userStats.totalMinutes;
     document.getElementById('stats-sessions').textContent = userStats.sessions;
+    
+    // Calculate combined accuracy for Matching and Learn
+    const matchingStats = userStats.matchingStats || { total: 0, correct: 0 };
+    const learnStats = userStats.learnStats || { total: 0, correct: 0 };
+    const totalAttempts = matchingStats.total + learnStats.total;
+    const totalCorrect = matchingStats.correct + learnStats.correct;
+    const combinedAccuracy = totalAttempts > 0 ? Math.round((totalCorrect / totalAttempts) * 100) : 0;
+    
+    // Update accuracy display
+    const accuracyEl = document.getElementById('stats-accuracy');
+    if (accuracyEl) {
+        accuracyEl.textContent = `${combinedAccuracy}%`;
+    }
 }
 
 function getSetProgress(set) {
@@ -782,6 +899,185 @@ function renderSetDetail() {
             }
         }
     }
+
+    // Reset word selection when viewing set detail
+    selectedWordCount = null;
+    wordSelectionMode = 'random';
+    updateSelectedCountDisplay();
+    updateWordCountButtons();
+}
+
+// --- WORD SELECTION FUNCTIONS ---
+function setWordSelection(mode, count) {
+    wordSelectionMode = mode;
+    selectedWordCount = count;
+    updateSelectedCountDisplay();
+    updateWordCountButtons();
+}
+
+function showCustomCountInput() {
+    const inputDiv = document.getElementById('custom-count-input');
+    if (inputDiv) {
+        inputDiv.classList.remove('hidden');
+        const input = document.getElementById('custom-word-count');
+        if (input) {
+            input.focus();
+            input.value = selectedWordCount || '';
+        }
+    }
+}
+
+function applyCustomCount() {
+    const input = document.getElementById('custom-word-count');
+    if (!input) return;
+    const count = parseInt(input.value);
+    if (count && count > 0) {
+        setWordSelection('random', count);
+        const inputDiv = document.getElementById('custom-count-input');
+        if (inputDiv) inputDiv.classList.add('hidden');
+    } else {
+        alert('Vui lòng nhập số từ hợp lệ (lớn hơn 0)');
+    }
+}
+
+function updateSelectedCountDisplay() {
+    const display = document.getElementById('selected-count-text');
+    if (!display) return;
+    
+    if (!currentSet) {
+        display.textContent = 'Chưa chọn';
+        return;
+    }
+
+    const totalWords = currentSet.data.length;
+    let text = '';
+
+    if (wordSelectionMode === 'all' || selectedWordCount === null) {
+        text = `Tất cả ${totalWords} từ`;
+    } else if (wordSelectionMode === 'unlearned') {
+        const learnedIds = new Set(userStats.learnedIds || []);
+        const unlearned = currentSet.data.filter(w => !learnedIds.has(w.id));
+        text = `${unlearned.length} từ chưa học`;
+    } else {
+        text = `${Math.min(selectedWordCount, totalWords)} từ (ngẫu nhiên)`;
+    }
+
+    display.textContent = text;
+}
+
+function updateWordCountButtons() {
+    const buttons = document.querySelectorAll('.word-count-btn');
+    buttons.forEach(btn => {
+        const onclick = btn.getAttribute('onclick') || '';
+        let isActive = false;
+        
+        // Check based on mode and count
+        if (wordSelectionMode === 'all' && onclick.includes("'all'")) {
+            isActive = true;
+        } else if (wordSelectionMode === 'random' && onclick.includes("'random'") && onclick.includes(selectedWordCount)) {
+            isActive = true;
+        } else if (wordSelectionMode === 'unlearned' && onclick.includes("'unlearned'")) {
+            isActive = true;
+        }
+        
+        if (isActive) {
+            btn.classList.add('border-indigo-500', 'bg-indigo-100', 'dark:bg-indigo-900/30', 'text-indigo-700', 'dark:text-indigo-300');
+            btn.classList.remove('border-slate-200', 'dark:border-slate-700', 'bg-slate-50', 'dark:bg-slate-800');
+        } else {
+            btn.classList.remove('border-indigo-500', 'bg-indigo-100', 'dark:bg-indigo-900/30', 'text-indigo-700', 'dark:text-indigo-300');
+            btn.classList.add('border-slate-200', 'dark:border-slate-700', 'bg-slate-50', 'dark:bg-slate-800');
+        }
+    });
+}
+
+function getSelectedWords() {
+    if (!currentSet) return [];
+
+    let sourceWords = [...currentSet.data];
+    const totalWords = sourceWords.length;
+
+    // Filter based on mode
+    if (wordSelectionMode === 'unlearned') {
+        const learnedIds = new Set(userStats.learnedIds || []);
+        sourceWords = sourceWords.filter(w => !learnedIds.has(w.id));
+    }
+
+    // Apply count limit
+    if (wordSelectionMode === 'all' || selectedWordCount === null) {
+        // All words, but apply smart random if needed
+        return applySmartRandom(sourceWords, totalWords);
+    } else {
+        // Specific count with smart random
+        return applySmartRandom(sourceWords, selectedWordCount);
+    }
+}
+
+function applySmartRandom(words, targetCount) {
+    if (words.length <= targetCount) {
+        // Not enough words, return all shuffled
+        return shuffleArray([...words]);
+    }
+
+    const setId = currentSet?.id;
+    if (!setId) {
+        // No set ID, just random
+        return shuffleArray([...words]).slice(0, targetCount);
+    }
+
+    // Get previous random history
+    const history = userStats.randomHistory?.[setId] || [];
+    const maxOverlap = Math.floor(targetCount * 0.2); // 20% max overlap
+
+    // Separate words into: previously used and new
+    const historySet = new Set(history);
+    const previouslyUsed = words.filter(w => historySet.has(w.id));
+    const newWords = words.filter(w => !historySet.has(w.id));
+
+    // Calculate how many from each group
+    let fromPrevious = Math.min(previouslyUsed.length, maxOverlap);
+    let fromNew = targetCount - fromPrevious;
+
+    // If not enough new words, use more from previous
+    if (fromNew > newWords.length) {
+        fromPrevious = targetCount - newWords.length;
+        fromNew = newWords.length;
+    }
+
+    // Select words
+    const selected = [];
+    
+    // Add from new words (random)
+    if (fromNew > 0) {
+        const shuffledNew = shuffleArray([...newWords]);
+        selected.push(...shuffledNew.slice(0, fromNew));
+    }
+
+    // Add from previous words (random, limited to 20%)
+    if (fromPrevious > 0) {
+        const shuffledPrevious = shuffleArray([...previouslyUsed]);
+        selected.push(...shuffledPrevious.slice(0, fromPrevious));
+    }
+
+    // Shuffle final selection
+    const finalSelection = shuffleArray(selected);
+
+    // Update history (keep last N words to avoid too much memory)
+    const maxHistorySize = 100;
+    const newHistory = [...finalSelection.map(w => w.id), ...history].slice(0, maxHistorySize);
+    if (!userStats.randomHistory) userStats.randomHistory = {};
+    userStats.randomHistory[setId] = newHistory;
+    saveStats();
+
+    return finalSelection;
+}
+
+function shuffleArray(array) {
+    const shuffled = [...array];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    return shuffled;
 }
 
 // --- LEARN MODE LOGIC ---
@@ -791,7 +1087,11 @@ function startLearn() {
     const autoRelearn = currentSet.id === 'weak-review';
     const shouldReuseData = (isRelearnMode || autoRelearn) && currentSessionData.length > 0;
     if (!shouldReuseData) {
-        currentSessionData = cloneSessionDataFromSet(currentSet);
+        // Use selected words if available, otherwise use all words
+        currentSessionData = getSelectedWords();
+        if (currentSessionData.length === 0) {
+            currentSessionData = cloneSessionDataFromSet(currentSet);
+        }
     }
     isRelearnMode = isRelearnMode || autoRelearn;
 
@@ -922,13 +1222,34 @@ function handleLearnAnswer(selectedId, questionItem, btn) {
 function finishLearn() {
     saveWeakWords(); // Save any wrong words to persistent storage
     
+    // Calculate accuracy
+    const totalQuestions = learnQuestions.length;
+    const accuracy = totalQuestions > 0 ? Math.round((learnStats.correct / totalQuestions) * 100) : 0;
+    
+    // Update stats
+    if (!userStats.learnStats) userStats.learnStats = { total: 0, correct: 0 };
+    userStats.learnStats.total += totalQuestions;
+    userStats.learnStats.correct += learnStats.correct;
+    saveStats();
+    
     showView('result');
     document.getElementById('learn-progress-bar').style.width = `100%`;
     
-    // Ensure stats are accurate for this session
-    document.getElementById('res-known').textContent = learnStats.correct;
-    document.getElementById('res-learning').textContent = learnStats.wrong;
-    document.getElementById('result-stats-block').style.display = 'grid';
+    // Show stats with accuracy
+    const statsBlock = document.getElementById('result-stats-block');
+    if (statsBlock) {
+        statsBlock.style.display = 'grid';
+        statsBlock.innerHTML = `
+            <div class="bg-green-50 dark:bg-green-900/20 p-3 rounded-2xl border border-green-100 dark:border-green-900/30">
+                <div class="text-2xl font-bold text-green-600 dark:text-green-400">${learnStats.correct}/${totalQuestions}</div>
+                <div class="text-[10px] text-green-800 dark:text-green-300 uppercase font-bold tracking-wider">Câu đúng</div>
+            </div>
+            <div class="bg-indigo-50 dark:bg-indigo-900/20 p-3 rounded-2xl border border-indigo-100 dark:border-indigo-900/30">
+                <div class="text-2xl font-bold text-indigo-600 dark:text-indigo-400">${accuracy}%</div>
+                <div class="text-[10px] text-indigo-800 dark:text-indigo-300 uppercase font-bold tracking-wider">Tỉ lệ chính xác</div>
+            </div>
+        `;
+    }
 
     // Show Relearn button if there were errors
     const btnRelearn = document.getElementById('btn-relearn');
@@ -940,8 +1261,8 @@ function finishLearn() {
         btnRelearn.classList.add('hidden');
     }
 
-    let msg = `Bạn làm đúng ${learnStats.correct}/${learnQuestions.length} câu.`;
-    if (learnStats.correct === learnQuestions.length) msg = "Tuyệt đối! Bạn đã nắm vững bài học.";
+    let msg = `Bạn làm đúng ${learnStats.correct}/${totalQuestions} câu.`;
+    if (learnStats.correct === totalQuestions) msg = "Tuyệt đối! Bạn đã nắm vững bài học.";
     else if (learnStats.correct > learnStats.wrong) msg = "Làm tốt lắm! Hãy cố gắng hơn.";
     
     document.getElementById('result-message').textContent = msg;
@@ -958,7 +1279,11 @@ function startFlashcards() {
     const autoRelearn = currentSet.id === 'weak-review';
     const shouldReuseData = (isRelearnMode || autoRelearn) && currentSessionData.length > 0;
     if (!shouldReuseData) {
-        currentSessionData = cloneSessionDataFromSet(currentSet);
+        // Use selected words if available, otherwise use all words
+        currentSessionData = getSelectedWords();
+        if (currentSessionData.length === 0) {
+            currentSessionData = cloneSessionDataFromSet(currentSet);
+        }
     }
     isRelearnMode = isRelearnMode || autoRelearn;
 
@@ -1110,7 +1435,11 @@ function finishFlashcards() {
 
 function startMatching() { 
     if (!currentSet) return; 
-    currentSessionData = cloneSessionDataFromSet(currentSet);
+    // Use selected words if available, otherwise use all words
+    currentSessionData = getSelectedWords();
+    if (currentSessionData.length === 0) {
+        currentSessionData = cloneSessionDataFromSet(currentSet);
+    }
     if (currentSessionData.length === 0) {
         alert('Không có thuật ngữ để chơi Matching.');
         return;
@@ -1121,38 +1450,95 @@ function startMatching() {
     showView('matching'); 
     matchSelected = []; 
     matchMatched = []; 
-    matchTime = 0; 
+    matchTime = 0;
+    matchCurrentBatch = 0;
+    matchTotalPairs = currentSessionData.length;
+    matchCorrectPairs = 0;
+    matchWrongAttempts = 0;
     startMatchTimer(); 
+    
+    // Create all cards
     let cards = []; 
     currentSessionData.forEach(item => { 
         cards.push({ id: `w-${item.id}`, refId: item.id, content: item.word }); 
         cards.push({ id: `m-${item.id}`, refId: item.id, content: item.meaning }); 
     }); 
-    matchCards = cards.sort(() => Math.random() - 0.5); 
-    const grid = document.getElementById('matching-grid'); 
-    grid.innerHTML = ''; 
-    matchCards.forEach(card => { 
-        const el = document.createElement('div'); 
-        el.className = 'bg-white dark:bg-dark-card border-2 border-slate-200 dark:border-slate-700 rounded-2xl p-2 md:p-3 flex items-center justify-center text-center cursor-pointer hover:border-indigo-300 dark:hover:border-indigo-600 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all select-none h-full font-medium text-slate-700 dark:text-slate-200 active:scale-95 text-xs md:text-sm btn-press shadow-sm break-words'; 
-        el.textContent = card.content; 
-        el.onclick = () => handleMatchClick(card.id, card.refId, el); 
-        grid.appendChild(el); 
-    }); 
+    matchCards = cards.sort(() => Math.random() - 0.5);
+    
+    // Display first batch (10 pairs = 20 cards)
+    renderMatchingBatch();
 }
-function handleMatchClick(id, refId, el) { if (matchMatched.includes(id) || matchSelected.some(s => s.id === id) || matchSelected.length >= 2) return; el.classList.add('border-indigo-500', 'bg-indigo-50', 'dark:bg-indigo-900/40', 'dark:border-indigo-500'); matchSelected.push({ id, refId, el }); if (matchSelected.length === 2) setTimeout(checkMatch, 300); }
+
+function renderMatchingBatch() {
+    const grid = document.getElementById('matching-grid');
+    if (!grid) return;
+    
+    grid.innerHTML = '';
+    
+    const BATCH_SIZE = 10; // 10 pairs = 20 cards
+    const startIndex = matchCurrentBatch * BATCH_SIZE * 2;
+    const endIndex = Math.min(startIndex + BATCH_SIZE * 2, matchCards.length);
+    const batchCards = matchCards.slice(startIndex, endIndex);
+    
+    // Show progress
+    const progressText = document.getElementById('match-progress');
+    if (progressText) {
+        const currentPairs = Math.floor(matchMatched.length / 2);
+        progressText.textContent = `${currentPairs}/${matchTotalPairs} cặp`;
+    }
+    
+    batchCards.forEach(card => {
+        const isMatched = matchMatched.includes(card.id);
+        const el = document.createElement('div');
+        
+        if (isMatched) {
+            el.className = 'bg-green-100 dark:bg-green-900/30 border-2 border-green-500 dark:border-green-600 text-green-700 dark:text-green-300 rounded-2xl p-2 md:p-3 flex items-center justify-center text-center h-full font-bold anim-correct text-xs md:text-sm shadow-inner';
+        } else {
+            el.className = 'bg-white dark:bg-dark-card border-2 border-slate-200 dark:border-slate-700 rounded-2xl p-2 md:p-3 flex items-center justify-center text-center cursor-pointer hover:border-indigo-300 dark:hover:border-indigo-600 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all select-none h-full font-medium text-slate-700 dark:text-slate-200 active:scale-95 text-xs md:text-sm btn-press shadow-sm break-words';
+            el.onclick = () => handleMatchClick(card.id, card.refId, el);
+        }
+        
+        el.textContent = card.content;
+        grid.appendChild(el);
+    });
+}
+function handleMatchClick(id, refId, el) { 
+    if (matchMatched.includes(id) || matchSelected.some(s => s.id === id) || matchSelected.length >= 2) return; 
+    el.classList.add('border-indigo-500', 'bg-indigo-50', 'dark:bg-indigo-900/40', 'dark:border-indigo-500'); 
+    matchSelected.push({ id, refId, el }); 
+    if (matchSelected.length === 2) setTimeout(checkMatch, 300); 
+}
+
 function checkMatch() {
     const [c1, c2] = matchSelected;
     if (c1.refId === c2.refId) {
+        // Correct match
         [c1.el, c2.el].forEach(el => el.className = 'bg-green-100 dark:bg-green-900/30 border-2 border-green-500 dark:border-green-600 text-green-700 dark:text-green-300 rounded-2xl p-2 md:p-3 flex items-center justify-center text-center h-full font-bold anim-correct text-xs md:text-sm shadow-inner');
         matchMatched.push(c1.id, c2.id);
+        matchCorrectPairs++;
+        
+        // Track word as learned
+        trackWordLearned(c1.refId);
+        
+        // Check if current batch is complete (all 10 pairs matched)
+        const BATCH_SIZE = 10;
+        const currentBatchPairs = Math.floor(matchMatched.length / 2);
+        const pairsInCurrentBatch = currentBatchPairs - (matchCurrentBatch * BATCH_SIZE);
+        
+        if (pairsInCurrentBatch >= BATCH_SIZE && matchMatched.length < matchCards.length) {
+            // Move to next batch
+            matchCurrentBatch++;
+            setTimeout(() => renderMatchingBatch(), 500);
+        }
+        
+        // Check if all pairs are matched
         if (matchMatched.length === matchCards.length) {
             stopMatchTimer();
-            matchCards.forEach((c, i) => {
-                if (i % 2 === 0) trackWordLearned(c.refId);
-            });
-            setTimeout(() => showResult(`Hoàn thành trong ${formatTime(matchTime)}!`), 1000);
+            setTimeout(() => finishMatching(), 1000);
         }
     } else {
+        // Wrong match
+        matchWrongAttempts++;
         [c1.el, c2.el].forEach(el => el.classList.add('anim-wrong'));
         setTimeout(() => {
             [c1.el, c2.el].forEach(el => el.className = 'bg-white dark:bg-dark-card border-2 border-slate-200 dark:border-slate-700 rounded-2xl p-2 md:p-3 flex items-center justify-center text-center cursor-pointer hover:border-indigo-300 dark:hover:border-indigo-600 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all select-none h-full font-medium text-slate-700 dark:text-slate-200 active:scale-95 text-xs md:text-sm btn-press shadow-sm break-words');
@@ -1160,14 +1546,45 @@ function checkMatch() {
     }
     matchSelected = [];
 }
+
+function finishMatching() {
+    // Calculate accuracy
+    const totalAttempts = matchCorrectPairs + matchWrongAttempts;
+    const accuracy = totalAttempts > 0 ? Math.round((matchCorrectPairs / totalAttempts) * 100) : 0;
+    
+    // Update stats
+    if (!userStats.matchingStats) userStats.matchingStats = { total: 0, correct: 0 };
+    userStats.matchingStats.total += totalAttempts;
+    userStats.matchingStats.correct += matchCorrectPairs;
+    saveStats();
+    
+    // Show result with accuracy
+    showMatchingResult(`Hoàn thành trong ${formatTime(matchTime)}!`, accuracy, matchCorrectPairs, matchTotalPairs);
+}
 function startMatchTimer() { const timerEl = document.getElementById('match-timer'); matchTimerInterval = setInterval(() => { matchTime++; if(timerEl) timerEl.textContent = formatTime(matchTime); }, 1000); }
 function stopMatchTimer() { clearInterval(matchTimerInterval); }
 function formatTime(s) { return `${Math.floor(s/60).toString().padStart(2,'0')}:${(s%60).toString().padStart(2,'0')}`; }
 // Helper to show result from match
-function showResult(msg) {
+function showMatchingResult(msg, accuracy, correct, total) {
     showView('result');
     document.getElementById('result-message').textContent = msg;
-    document.getElementById('result-stats-block').style.display = 'none';
+    
+    // Show accuracy stats
+    const statsBlock = document.getElementById('result-stats-block');
+    if (statsBlock) {
+        statsBlock.style.display = 'grid';
+        statsBlock.innerHTML = `
+            <div class="bg-green-50 dark:bg-green-900/20 p-3 rounded-2xl border border-green-100 dark:border-green-900/30">
+                <div class="text-2xl font-bold text-green-600 dark:text-green-400">${correct}/${total}</div>
+                <div class="text-[10px] text-green-800 dark:text-green-300 uppercase font-bold tracking-wider">Cặp đúng</div>
+            </div>
+            <div class="bg-indigo-50 dark:bg-indigo-900/20 p-3 rounded-2xl border border-indigo-100 dark:border-indigo-900/30">
+                <div class="text-2xl font-bold text-indigo-600 dark:text-indigo-400">${accuracy}%</div>
+                <div class="text-[10px] text-indigo-800 dark:text-indigo-300 uppercase font-bold tracking-wider">Tỉ lệ chính xác</div>
+            </div>
+        `;
+    }
+    
     document.getElementById('btn-relearn').classList.add('hidden');
     updateRepeatButton();
 }
