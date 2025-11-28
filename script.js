@@ -247,27 +247,26 @@ async function loadVocabSets() {
 async function getFilesToScan(folder) {
     if (folderFileCache[folder]) return folderFileCache[folder];
 
-    const discoveredViaListing = await tryDirectoryListing(folder);
-    if (discoveredViaListing.length) {
-        folderFileCache[folder] = discoveredViaListing;
-        return discoveredViaListing;
+    const strategies = [
+        scanSequentialNumberedFiles,
+        tryDirectoryListing,
+        tryFolderManifest,
+        probeFallbackFiles
+    ];
+
+    for (const strategy of strategies) {
+        try {
+            const files = await strategy(folder);
+            if (files.length) {
+                folderFileCache[folder] = files;
+                return files;
+            }
+        } catch (err) {
+            console.warn(`Không thể quét thư mục ${folder} bằng phương pháp ${strategy.name}:`, err);
+        }
     }
 
-    const manifestFiles = await tryFolderManifest(folder);
-    if (manifestFiles.length) {
-        folderFileCache[folder] = manifestFiles;
-        return manifestFiles;
-    }
-
-    const sequentialFiles = await scanSequentialNumberedFiles(folder);
-    if (sequentialFiles.length) {
-        folderFileCache[folder] = sequentialFiles;
-        return sequentialFiles;
-    }
-
-    const fallbackFiles = await probeFallbackFiles(folder);
-    folderFileCache[folder] = fallbackFiles;
-    return fallbackFiles;
+    return [];
 }
 
 function normalizeFileList(files) {
