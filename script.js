@@ -259,6 +259,12 @@ async function getFilesToScan(folder) {
         return manifestFiles;
     }
 
+    const sequentialFiles = await scanSequentialNumberedFiles(folder);
+    if (sequentialFiles.length) {
+        folderFileCache[folder] = sequentialFiles;
+        return sequentialFiles;
+    }
+
     const fallbackFiles = await probeFallbackFiles(folder);
     folderFileCache[folder] = fallbackFiles;
     return fallbackFiles;
@@ -351,22 +357,63 @@ async function tryFolderManifest(folder) {
     return [];
 }
 
+async function scanSequentialNumberedFiles(folder) {
+    const detected = [];
+    const MAX_INDEX = 300;
+    const MAX_INITIAL_ATTEMPTS = 5;
+    const MAX_MISSES_AFTER_FOUND = 3;
+    let initialAttempts = 0;
+    let missesAfterFound = 0;
+
+    for (let i = 1; i <= MAX_INDEX; i++) {
+        const filename = `${i}.json`;
+        const exists = await checkFileExists(folder, filename);
+        if (exists) {
+            detected.push(filename);
+            missesAfterFound = 0;
+            continue;
+        }
+
+        if (!detected.length) {
+            initialAttempts++;
+            if (initialAttempts >= MAX_INITIAL_ATTEMPTS) break;
+        } else {
+            missesAfterFound++;
+            if (missesAfterFound >= MAX_MISSES_AFTER_FOUND) break;
+        }
+    }
+
+    return detected;
+}
+
+async function checkFileExists(folder, filename) {
+    const url = `./vocab/${folder}/${filename}`;
+    try {
+        const headResponse = await fetch(url, { method: 'HEAD', cache: 'no-cache' });
+        if (headResponse.ok) return true;
+    } catch (err) {
+        // Ignore and fallback to GET
+    }
+
+    try {
+        const getResponse = await fetch(url, { method: 'GET', cache: 'no-cache' });
+        if (!getResponse.ok) return false;
+        const contentType = getResponse.headers.get('content-type') || '';
+        if (!contentType.includes('application/json')) return false;
+        const data = await getResponse.json();
+        return data.words && Array.isArray(data.words);
+    } catch (err) {
+        return false;
+    }
+}
+
 async function probeFallbackFiles(folder) {
     const candidates = FALLBACK_FILES[folder] || [];
     if (!candidates.length) return [];
 
     const probes = candidates.map(async (filename) => {
-        try {
-            const response = await fetch(`./vocab/${folder}/${filename}`, { method: 'HEAD', cache: 'no-cache' });
-            if (response.ok) return filename;
-            // Some servers block HEAD, fall back to GET
-            const getResponse = await fetch(`./vocab/${folder}/${filename}`, { method: 'GET', cache: 'no-cache' });
-            if (!getResponse.ok) return null;
-            const data = await getResponse.json();
-            return data.words && Array.isArray(data.words) ? filename : null;
-        } catch {
-            return null;
-        }
+        const exists = await checkFileExists(folder, filename);
+        return exists ? filename : null;
     });
 
     const results = await Promise.all(probes);
