@@ -9,6 +9,29 @@ const VOCAB_INDEX_URL = './vocab/index.json';
 let VOCAB_SETS = [];
 let vocabLoaded = false;
 
+// Cache discovered files per folder to avoid redundant scans
+const folderFileCache = {};
+
+// Legacy fallback list (used only if automatic scan fails)
+const FALLBACK_FILES = {
+    'gdpt-program': [
+        'family-life.json', 'life-story.json', 'school-life.json', 'friendship.json',
+        'environment.json', 'global-warming.json', 'cultural-diversity.json',
+        'future-jobs.json', 'cities.json', 'ecotourism.json', 'relationship.json'
+    ],
+    'advanced-gdpt-program': [
+        'core.json', 'academic.json', 'ielts.json', 'advanced.json',
+        'essay.json', 'presentation.json', 'debate.json'
+    ],
+    'topic-vocab': [
+        'technology.json', 'business.json', 'travel.json', 'food.json',
+        'health.json', 'sports.json', 'music.json', 'art.json',
+        'science.json', 'education.json', 'culture.json', 'history.json',
+        'politics.json', 'economy.json', 'medicine.json', 'law.json',
+        'engineering.json', 'psychology.json', 'philosophy.json'
+    ]
+};
+
 // --- GLOBAL STATE ---
 let currentView = 'home';
 let currentSet = null;
@@ -220,65 +243,134 @@ async function loadVocabSets() {
     }
 }
 
-// Get list of files to scan - automatically tries to detect JSON files
+// Attempt to discover JSON files in a folder so new vocab sets auto-load
 async function getFilesToScan(folder) {
-    const detectedFiles = [];
-    
-    // Comprehensive list of possible vocab file names to try
-    // This covers common patterns and can be extended
-    const possibleFiles = [
-        // GDPT Program files
-        'family-life.json', 'life-story.json', 'school-life.json', 'friendship.json',
-        'environment.json', 'global-warming.json', 'cultural-diversity.json',
-        'future-jobs.json', 'cities.json', 'ecotourism.json',
-        
-        // Advanced GDPT files
-        'core.json', 'academic.json', 'ielts.json', 'advanced.json',
-        'essay.json', 'presentation.json', 'debate.json',
-        
-        // Topic vocab files
-        'technology.json', 'business.json', 'travel.json', 'food.json',
-        'health.json', 'sports.json', 'music.json', 'art.json',
-        'science.json', 'education.json', 'culture.json', 'history.json',
-        'politics.json', 'economy.json', 'medicine.json', 'law.json',
-        'engineering.json', 'psychology.json', 'philosophy.json'
+    if (folderFileCache[folder]) return folderFileCache[folder];
+
+    const discoveredViaListing = await tryDirectoryListing(folder);
+    if (discoveredViaListing.length) {
+        folderFileCache[folder] = discoveredViaListing;
+        return discoveredViaListing;
+    }
+
+    const manifestFiles = await tryFolderManifest(folder);
+    if (manifestFiles.length) {
+        folderFileCache[folder] = manifestFiles;
+        return manifestFiles;
+    }
+
+    const fallbackFiles = await probeFallbackFiles(folder);
+    folderFileCache[folder] = fallbackFiles;
+    return fallbackFiles;
+}
+
+function normalizeFileList(files) {
+    if (!Array.isArray(files)) return [];
+    const blacklist = ['index', 'manifest', 'vocab-list'];
+    const seen = new Set();
+    return files
+        .map(file => (typeof file === 'string' ? file.trim() : ''))
+        .filter(Boolean)
+        .filter(name => name.toLowerCase().endsWith('.json'))
+        .filter(name => !blacklist.some(term => name.toLowerCase().includes(term)))
+        .filter(name => {
+            if (seen.has(name)) return false;
+            seen.add(name);
+            return true;
+        });
+}
+
+async function tryDirectoryListing(folder) {
+    const urlsToTry = [
+        `./vocab/${folder}/?t=${Date.now()}`,
+        `./vocab/${folder}?t=${Date.now()}`
     ];
-    
-    // Try to detect files by attempting to fetch them
-    // Use Promise.all for parallel checking
-    const checkPromises = possibleFiles.map(async (filename) => {
+
+    for (const url of urlsToTry) {
         try {
-            // Try HEAD request first (faster)
-            const headResponse = await fetch(`./vocab/${folder}/${filename}`, { 
-                method: 'HEAD',
-                cache: 'no-cache'
+            const response = await fetch(url, {
+                method: 'GET',
+                cache: 'no-cache',
+                headers: { 'Accept': 'text/html,application/json' }
             });
-            if (headResponse.ok) {
-                return filename;
+            if (!response.ok) continue;
+            const contentType = response.headers.get('content-type') || '';
+
+            // Some dev servers (e.g. Vite) can return JSON arrays for directory listing
+            if (contentType.includes('application/json')) {
+                const data = await response.json();
+                const files = Array.isArray(data.files) ? data.files : data;
+                const normalized = normalizeFileList(files);
+                if (normalized.length) return normalized;
+                continue;
             }
-        } catch (e) {
-            // File doesn't exist or error, try GET as fallback
-            try {
-                const getResponse = await fetch(`./vocab/${folder}/${filename}`, {
-                    method: 'GET',
-                    cache: 'no-cache'
-                });
-                if (getResponse.ok) {
-                    const data = await getResponse.json();
-                    // Only include if it's a vocab file (has words array)
-                    if (data.words && Array.isArray(data.words)) {
-                        return filename;
-                    }
-                }
-            } catch (e2) {
-                // File doesn't exist
-            }
+
+            const text = await response.text();
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(text, 'text/html');
+            const links = Array.from(doc.querySelectorAll('a[href$=".json"]'));
+            const files = links.map(link => {
+                const href = link.getAttribute('href') || '';
+                const decoded = decodeURIComponent(href);
+                return decoded.split('/').pop();
+            });
+            const normalized = normalizeFileList(files);
+            if (normalized.length) return normalized;
+        } catch (error) {
+            // Ignore and try next strategy
         }
-        return null;
+    }
+
+    return [];
+}
+
+async function tryFolderManifest(folder) {
+    const manifestCandidates = [
+        `./vocab/${folder}/manifest.json`,
+        `./vocab/${folder}/filelist.json`,
+        `./vocab/${folder}/index.json`
+    ];
+
+    for (const url of manifestCandidates) {
+        try {
+            const response = await fetch(url, { method: 'GET', cache: 'no-cache' });
+            if (!response.ok) continue;
+            const data = await response.json();
+            if (Array.isArray(data.files)) {
+                const normalized = normalizeFileList(data.files);
+                if (normalized.length) return normalized;
+            } else if (Array.isArray(data)) {
+                const normalized = normalizeFileList(data);
+                if (normalized.length) return normalized;
+            }
+        } catch (err) {
+            // Ignore and try next candidate
+        }
+    }
+
+    return [];
+}
+
+async function probeFallbackFiles(folder) {
+    const candidates = FALLBACK_FILES[folder] || [];
+    if (!candidates.length) return [];
+
+    const probes = candidates.map(async (filename) => {
+        try {
+            const response = await fetch(`./vocab/${folder}/${filename}`, { method: 'HEAD', cache: 'no-cache' });
+            if (response.ok) return filename;
+            // Some servers block HEAD, fall back to GET
+            const getResponse = await fetch(`./vocab/${folder}/${filename}`, { method: 'GET', cache: 'no-cache' });
+            if (!getResponse.ok) return null;
+            const data = await getResponse.json();
+            return data.words && Array.isArray(data.words) ? filename : null;
+        } catch {
+            return null;
+        }
     });
-    
-    const results = await Promise.all(checkPromises);
-    return results.filter(f => f !== null);
+
+    const results = await Promise.all(probes);
+    return results.filter(Boolean);
 }
 
 // Loading UI functions
