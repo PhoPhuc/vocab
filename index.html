@@ -74,6 +74,14 @@
         <!-- Views will be injected here via JavaScript -->
     </main>
 
+    <!-- Loading Overlay -->
+    <div id="loading-overlay" class="fixed inset-0 bg-white/90 dark:bg-dark-bg/90 backdrop-blur-sm z-50 flex items-center justify-center" style="display: none;">
+        <div class="text-center">
+            <div class="w-16 h-16 border-4 border-indigo-200 dark:border-indigo-800 border-t-indigo-600 dark:border-t-indigo-400 rounded-full animate-spin mx-auto mb-4"></div>
+            <p class="text-slate-700 dark:text-slate-300 font-medium">Đang tải từ vựng...</p>
+        </div>
+    </div>
+
     <!-- TEMPLATES -->
     
     <!-- 1. Home View -->
@@ -119,7 +127,7 @@
 
     <!-- 2. Set Detail View -->
     <template id="tpl-set-detail">
-        <div class="w-full max-w-md md:max-w-2xl text-center space-y-6 md:space-y-8 view-enter overflow-y-auto pb-10">
+        <div class="w-full max-w-md md:max-w-2xl text-center space-y-6 md:space-y-8 view-enter overflow-y-auto no-scrollbar pb-10">
             <!-- Back Button -->
             <div class="w-full flex justify-start mb-2">
                  <button onclick="showView('home')" class="flex items-center gap-2 text-slate-500 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors btn-press px-3 py-2 bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-100 dark:border-slate-700">
@@ -158,6 +166,52 @@
                     <div class="text-orange-600 dark:text-orange-400 font-bold text-sm bg-white dark:bg-slate-900 px-3 py-1.5 rounded-lg shadow-sm">
                         Học ngay
                     </div>
+                </div>
+            </div>
+
+            <!-- Word Count Selection -->
+            <div class="w-full bg-white dark:bg-dark-card p-5 rounded-2xl shadow-sm border border-slate-100 dark:border-slate-700">
+                <h3 class="text-lg font-bold text-slate-800 dark:text-white mb-4 flex items-center gap-2">
+                    <i class="ph ph-list-numbers text-indigo-600 dark:text-indigo-400"></i>
+                    Chọn số lượng từ
+                </h3>
+                
+                <!-- Quick Selection Buttons -->
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-2 mb-4">
+                    <button onclick="setWordSelection('all', null)" class="word-count-btn px-4 py-2 rounded-xl border-2 border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-medium hover:border-indigo-400 dark:hover:border-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 transition-all btn-press">
+                        Tất cả
+                    </button>
+                    <button onclick="setWordSelection('random', 25)" class="word-count-btn px-4 py-2 rounded-xl border-2 border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-medium hover:border-indigo-400 dark:hover:border-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 transition-all btn-press">
+                        25 từ
+                    </button>
+                    <button onclick="setWordSelection('random', 50)" class="word-count-btn px-4 py-2 rounded-xl border-2 border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-medium hover:border-indigo-400 dark:hover:border-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 transition-all btn-press">
+                        50 từ
+                    </button>
+                    <button onclick="setWordSelection('unlearned', null)" class="word-count-btn px-4 py-2 rounded-xl border-2 border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-medium hover:border-indigo-400 dark:hover:border-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 transition-all btn-press">
+                        Chưa học
+                    </button>
+                </div>
+
+                <!-- Custom Input -->
+                <div class="mb-4">
+                    <button onclick="showCustomCountInput()" class="w-full word-count-btn px-4 py-2 rounded-xl border-2 border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-medium hover:border-indigo-400 dark:hover:border-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 transition-all btn-press">
+                        Tùy chỉnh số lượng
+                    </button>
+                </div>
+
+                <!-- Custom Input (Hidden by default) -->
+                <div id="custom-count-input" class="hidden">
+                    <div class="flex gap-2">
+                        <input type="number" id="custom-word-count" min="1" placeholder="Nhập số từ" class="flex-1 px-4 py-2 rounded-xl border-2 border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
+                        <button onclick="applyCustomCount()" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-xl transition-all btn-press">
+                            Áp dụng
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Selected Count Display -->
+                <div id="selected-count-display" class="mt-3 text-sm text-slate-600 dark:text-slate-400">
+                    <span id="selected-count-text">Chưa chọn</span>
                 </div>
             </div>
 
@@ -300,9 +354,15 @@
                  <button onclick="showView('set-detail')" class="flex items-center gap-2 text-slate-500 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors btn-press px-2 py-1 rounded-lg">
                     <i class="ph ph-arrow-left text-xl"></i> <span class="text-sm font-bold">Thoát</span>
                 </button>
-                <div class="flex items-center gap-2 text-indigo-600 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-900/30 px-3 py-1 rounded-full border border-indigo-100 dark:border-indigo-800">
-                    <i class="ph ph-clock"></i>
-                    <span id="match-timer" class="font-mono font-bold">00:00</span>
+                <div class="flex items-center gap-3">
+                    <div class="flex items-center gap-2 text-slate-600 dark:text-slate-300 bg-slate-50 dark:bg-slate-800 px-3 py-1 rounded-full border border-slate-200 dark:border-slate-700">
+                        <i class="ph ph-list-checks"></i>
+                        <span id="match-progress" class="font-bold text-sm">0/0</span>
+                    </div>
+                    <div class="flex items-center gap-2 text-indigo-600 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-900/30 px-3 py-1 rounded-full border border-indigo-100 dark:border-indigo-800">
+                        <i class="ph ph-clock"></i>
+                        <span id="match-timer" class="font-mono font-bold">00:00</span>
+                    </div>
                 </div>
             </div>
             
@@ -419,6 +479,11 @@
                     <div class="text-pink-500 mb-2"><i class="ph-fill ph-clock text-2xl"></i></div>
                     <div class="text-3xl font-bold text-slate-800 dark:text-white" id="stats-time">0</div>
                     <div class="text-xs text-slate-500 dark:text-slate-400 font-medium uppercase tracking-wide mt-1">Phút đã học</div>
+                </div>
+                <div class="bg-white dark:bg-dark-card p-5 rounded-2xl shadow-sm border border-slate-100 dark:border-slate-700 col-span-2">
+                    <div class="text-cyan-500 mb-2"><i class="ph-fill ph-target text-2xl"></i></div>
+                    <div class="text-3xl font-bold text-slate-800 dark:text-white" id="stats-accuracy">0%</div>
+                    <div class="text-xs text-slate-500 dark:text-slate-400 font-medium uppercase tracking-wide mt-1">Tỉ lệ chính xác (Matching + Learn)</div>
                 </div>
             </div>
             
