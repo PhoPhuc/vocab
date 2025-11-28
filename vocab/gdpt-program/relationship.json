@@ -1,7 +1,7 @@
 {
     "topicId": "relationship",
     "title": "Mối quan hệ",
-    "name": "Relationship Vocabulary",
+    "name": "Unit 2: Relationship",
     "color": "rose",
     "words": [
       { "id": 1, "word": "bond", "type": "n", "ipa": "/bɑːnd/", "meaning": "mối gắn kết", "example": "A shared love of jazz created a strong bond between the new roommates." },
@@ -419,4 +419,5 @@
       { "id": 413, "word": "partisanship", "type": "n", "ipa": "/ˈpɑːrtɪzənʃɪp/", "meaning": "tính phe phái", "example": "Excessive partisanship can divide community councils." },
       { "id": 414, "word": "partisan", "type": "n/adj", "ipa": "/ˈpɑːrtɪzən/", "meaning": "người thuộc phe phái", "example": "A neutral mediator balanced the views of each partisan." }
     ]
+
   }
